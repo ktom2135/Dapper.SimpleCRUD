@@ -192,7 +192,7 @@ namespace Dapper.SimpleCRUDTests
             }
             else
             {
-                connection = new SqlConnection(@"Data Source = .\sqlexpress;Initial Catalog=DapperSimpleCrudTestDb;Integrated Security=True;MultipleActiveResultSets=true;");
+                connection = new SqlConnection(@"Data Source=.;Initial Catalog=DapperSimpleCrudTestDb;User ID=sa;Password=sa;MultipleActiveResultSets=true;");
                 SimpleCRUD.SetDialect(SimpleCRUD.Dialect.SQLServer);
             }
 
@@ -603,6 +603,52 @@ namespace Dapper.SimpleCRUDTests
                 connection.Execute("INSERT INTO CITY (NAME, POPULATION) VALUES ('Morgantown', 31000)");
                 var city = connection.Get<City>("Morgantown");
                 city.Population.IsEqualTo(31000);
+            }
+        }
+
+        public void TestInsertBatch()
+        {
+            using (var connection = GetOpenConnection())
+            {
+                string deleteCommand = "delete from City";
+
+                connection.Execute(deleteCommand);
+
+                List<City> citys = new List<City>();
+                Stopwatch sp = new Stopwatch();
+                for (int i = 0; i < 10000; i++)
+                {
+                    City city2 = new City()
+                    {
+                        Name = Guid.NewGuid().ToString(),
+                        Population = i
+                    };
+                    citys.Add(city2);
+                }
+                sp.Start();
+                connection.InsertList<string, City>(citys);
+                sp.Stop();
+
+                var count = connection.RecordCount<City>();
+
+                count.IsEqualTo(10000);
+            }
+        }
+
+        public void TestInsertFromTableWithNonIntPrimatyKey()
+        {
+            using (var connection = GetOpenConnection())
+            {
+                string name = Guid.NewGuid().ToString().Replace("-", "");
+                City city = new City() { Name = name, Population = 10 };
+                string id = connection.Insert<string, City>(city);
+                var city3 = connection.Get<City>(name);
+                city.Name.IsEqualTo(city3.Name);
+
+
+                connection.Delete<City>(name);
+                var cityNull = connection.Get<City>(name);
+                cityNull.IsNull();
             }
         }
 

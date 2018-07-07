@@ -27,7 +27,7 @@ namespace DemoWebsite
         private static void SetupDB()
         {
             var dbrecreated = false;
-            using (var connection = new SqlConnection(@"Data Source=.\sqlexpress;Initial Catalog=Master;Integrated Security=True"))
+            using (var connection = new SqlConnection(@"Data Source=.;Initial Catalog=master;User ID=sa;Password=sa"))
             {
                 connection.Open();
                 try
@@ -56,9 +56,9 @@ namespace DemoWebsite
                 connection.Execute(@" create TABLE Car (Id int IDENTITY(1,1) not null  Primary Key, Make nvarchar(100) not null, ModelName nvarchar(100) not null) ");
                 connection.Insert(new CarViewModel() { Make = "Honda", ModelName = "Civic" });
                 connection.Execute(@" create TABLE Users (UserId int IDENTITY(1,1) not null Primary Key, FirstName nvarchar(100) not null, LastName nvarchar(100) not null, intAge int not null) ");
-                connection.Insert(new UserViewModel() {Age = 42, FirstName = "Jim", LastName = "Smith"});
+                connection.Insert(new UserViewModel() { Age = 42, FirstName = "Jim", LastName = "Smith" });
                 connection.Execute(@" CREATE TABLE GUIDTest (guid uniqueidentifier NOT NULL,name varchar(50) NOT NULL, CONSTRAINT PK_GUIDTest PRIMARY KEY CLUSTERED (guid ASC))");
-                connection.Insert<Guid, GUIDTest>(new GUIDTestViewModel {name = "Example"});
+                connection.Insert<Guid, GUIDTest>(new GUIDTestViewModel { name = "Example" });
 
                 int x = 1;
                 do

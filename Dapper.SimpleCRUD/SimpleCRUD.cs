@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
 using System.Diagnostics;
@@ -26,8 +25,8 @@ namespace Dapper
         private static string _getIdentitySql;
         private static string _getPagedListSql;
 
-        private static readonly ConcurrentDictionary<Type, string> TableNames = new ConcurrentDictionary<Type, string>();
-        private static readonly ConcurrentDictionary<string, string> ColumnNames = new ConcurrentDictionary<string, string>();
+        private static readonly IDictionary<Type, string> TableNames = new Dictionary<Type, string>();
+        private static readonly IDictionary<string, string> ColumnNames = new Dictionary<string, string>();
 
         private static ITableNameResolver _tableNameResolver = new TableNameResolver();
         private static IColumnNameResolver _columnNameResolver = new ColumnNameResolver();
@@ -312,6 +311,8 @@ namespace Dapper
             return Insert<int?, TEntity>(connection, entityToInsert, transaction, commandTimeout);
         }
 
+
+
         /// <summary>
         /// <para>Inserts a row into the database, using ONLY the properties defined by TEntity</para>
         /// <para>By default inserts into the table matching the class name</para>
@@ -368,6 +369,22 @@ namespace Dapper
                 sb.Append(";select '" + idProps.First().GetValue(entityToInsert, null) + "' as id");
             }
 
+            if (keytype == typeof(string))
+            {
+                var stringValue = (string)idProps.First().GetValue(entityToInsert, null);
+                if (string.IsNullOrEmpty(stringValue))
+                {
+                    var newString = SequentialGuid().ToString().Replace("-", "");
+
+                    idProps.First().SetValue(entityToInsert, newString, null);
+                }
+                else
+                {
+                    keyHasPredefinedValue = true;
+                }
+                sb.Append(";select '" + idProps.First().GetValue(entityToInsert, null) + "' as id");
+            }
+
             if ((keytype == typeof(int) || keytype == typeof(long)) && Convert.ToInt64(idProps.First().GetValue(entityToInsert, null)) == 0)
             {
                 sb.Append(";" + _getIdentitySql);
@@ -387,6 +404,39 @@ namespace Dapper
                 return (TKey)idProps.First().GetValue(entityToInsert, null);
             }
             return (TKey)r.First().id;
+        }
+
+        public static void InsertList<TKey, TEntity>(this IDbConnection connection, IEnumerable<TEntity> entityToInsert, IDbTransaction transaction = null, int? commandTimeout = null)
+        {
+            var idProps = GetIdProperties(typeof(TEntity)).ToList();
+
+            if (!idProps.Any())
+                throw new ArgumentException("Insert<T> only supports an entity with a [Key] or Id property");
+
+            var keyHasPredefinedValue = false;
+            var baseType = typeof(TKey);
+            var underlyingType = Nullable.GetUnderlyingType(baseType);
+            var keytype = underlyingType ?? baseType;
+            if (keytype != typeof(int) && keytype != typeof(uint) && keytype != typeof(long) && keytype != typeof(ulong) && keytype != typeof(short) && keytype != typeof(ushort) && keytype != typeof(Guid) && keytype != typeof(string))
+            {
+                throw new Exception("Invalid return type");
+            }
+
+            var name = GetTableName(typeof(TEntity));
+            var sb = new StringBuilder();
+            sb.AppendFormat("insert into {0}", name);
+            sb.Append(" (");
+            BuildInsertParameters<TEntity>(sb);
+            sb.Append(") ");
+            sb.Append("values");
+            sb.Append(" (");
+            BuildInsertValues<TEntity>(sb);
+            sb.Append(")");
+
+            if (Debugger.IsAttached)
+                Trace.WriteLine(String.Format("Insert: {0}", sb));
+
+            connection.Execute(sb.ToString(), entityToInsert, transaction);
         }
 
         /// <summary>
@@ -669,17 +719,16 @@ namespace Dapper
             var addedAny = false;
             for (var i = 0; i < propertyInfos.Count(); i++)
             {
-                var property = propertyInfos.ElementAt(i);
-
-                if (property.GetCustomAttributes(true).Any(attr => attr.GetType().Name == typeof(IgnoreSelectAttribute).Name || attr.GetType().Name == typeof(NotMappedAttribute).Name)) continue;
+                if (propertyInfos.ElementAt(i).GetCustomAttributes(true).Any(attr => attr.GetType().Name == typeof(IgnoreSelectAttribute).Name || attr.GetType().Name == typeof(NotMappedAttribute).Name)) continue;
 
                 if (addedAny)
                     sb.Append(",");
-                sb.Append(GetColumnName(property));
+                sb.Append(GetColumnName(propertyInfos.ElementAt(i)));
                 //if there is a custom column name add an "as customcolumnname" to the item so it maps properly
-                if (property.GetCustomAttributes(true).SingleOrDefault(attr => attr.GetType().Name == typeof(ColumnAttribute).Name) != null)
-                    sb.Append(" as " + Encapsulate(property.Name));
+                if (propertyInfos.ElementAt(i).GetCustomAttributes(true).SingleOrDefault(attr => attr.GetType().Name == typeof(ColumnAttribute).Name) != null)
+                    sb.Append(" as " + Encapsulate(propertyInfos.ElementAt(i).Name));
                 addedAny = true;
+
             }
         }
 
@@ -697,20 +746,21 @@ namespace Dapper
                 var sourceProperties = GetScaffoldableProperties<TEntity>().ToArray();
                 for (var x = 0; x < sourceProperties.Count(); x++)
                 {
-                    if (sourceProperties.ElementAt(x).Name == propertyToUse.Name)
+                    if (sourceProperties.ElementAt(x).Name == propertyInfos.ElementAt(i).Name)
                     {
-                        if (whereConditions != null && propertyToUse.CanRead && (propertyToUse.GetValue(whereConditions, null) == null || propertyToUse.GetValue(whereConditions, null) == DBNull.Value))
+                        propertyToUse = sourceProperties.ElementAt(x);
+
+                        if (whereConditions != null && propertyInfos.ElementAt(i).CanRead && (propertyInfos.ElementAt(i).GetValue(whereConditions, null) == null || propertyInfos.ElementAt(i).GetValue(whereConditions, null) == DBNull.Value))
                         {
                             useIsNull = true;
                         }
-                        propertyToUse = sourceProperties.ElementAt(x);
                         break;
                     }
                 }
                 sb.AppendFormat(
                     useIsNull ? "{0} is null" : "{0} = @{1}",
                     GetColumnName(propertyToUse),
-                    propertyToUse.Name);
+                    propertyInfos.ElementAt(i).Name);
 
                 if (i < propertyInfos.Count() - 1)
                     sb.AppendFormat(" and ");
@@ -729,15 +779,13 @@ namespace Dapper
             for (var i = 0; i < props.Count(); i++)
             {
                 var property = props.ElementAt(i);
-                if (property.PropertyType != typeof(Guid)
+                if (!(property.PropertyType == typeof(Guid) || property.PropertyType == typeof(string))
                       && property.GetCustomAttributes(true).Any(attr => attr.GetType().Name == typeof(KeyAttribute).Name)
                       && property.GetCustomAttributes(true).All(attr => attr.GetType().Name != typeof(RequiredAttribute).Name))
                     continue;
-                if (property.GetCustomAttributes(true).Any(attr => 
-                    attr.GetType().Name == typeof(IgnoreInsertAttribute).Name) ||
-                    attr.GetType().Name == typeof(NotMappedAttribute).Name ||
-                    attr.GetType().Name == typeof(ReadOnlyAttribute).Name && IsReadOnly(property)
-                ) continue;
+                if (property.GetCustomAttributes(true).Any(attr => attr.GetType().Name == typeof(IgnoreInsertAttribute).Name)) continue;
+                if (property.GetCustomAttributes(true).Any(attr => attr.GetType().Name == typeof(NotMappedAttribute).Name)) continue;
+                if (property.GetCustomAttributes(true).Any(attr => attr.GetType().Name == typeof(ReadOnlyAttribute).Name && IsReadOnly(property))) continue;
 
                 if (property.Name.Equals("Id", StringComparison.OrdinalIgnoreCase) && property.GetCustomAttributes(true).All(attr => attr.GetType().Name != typeof(RequiredAttribute).Name) && property.PropertyType != typeof(Guid)) continue;
 
@@ -763,16 +811,14 @@ namespace Dapper
             for (var i = 0; i < props.Count(); i++)
             {
                 var property = props.ElementAt(i);
-                if (property.PropertyType != typeof(Guid)
+                if (!(property.PropertyType == typeof(Guid) || property.PropertyType == typeof(string))
                       && property.GetCustomAttributes(true).Any(attr => attr.GetType().Name == typeof(KeyAttribute).Name)
                       && property.GetCustomAttributes(true).All(attr => attr.GetType().Name != typeof(RequiredAttribute).Name))
                     continue;
-                if (property.GetCustomAttributes(true).Any(attr => 
-                    attr.GetType().Name == typeof(IgnoreInsertAttribute).Name) ||
-                    attr.GetType().Name == typeof(NotMappedAttribute).Name ||
-                    attr.GetType().Name == typeof(ReadOnlyAttribute).Name && IsReadOnly(property)
-                ) continue;
-                
+                if (property.GetCustomAttributes(true).Any(attr => attr.GetType().Name == typeof(IgnoreInsertAttribute).Name)) continue;
+                if (property.GetCustomAttributes(true).Any(attr => attr.GetType().Name == typeof(NotMappedAttribute).Name)) continue;
+
+                if (property.GetCustomAttributes(true).Any(attr => attr.GetType().Name == typeof(ReadOnlyAttribute).Name && IsReadOnly(property))) continue;
                 if (property.Name.Equals("Id", StringComparison.OrdinalIgnoreCase) && property.GetCustomAttributes(true).All(attr => attr.GetType().Name != typeof(RequiredAttribute).Name) && property.PropertyType != typeof(Guid)) continue;
 
                 sb.Append(GetColumnName(property));
@@ -896,8 +942,7 @@ namespace Dapper
                 return tableName;
 
             tableName = _tableNameResolver.ResolveTableName(type);
-
-            TableNames.AddOrUpdate(type, tableName, (t, v) => tableName);
+            TableNames[type] = tableName;
 
             return tableName;
         }
@@ -910,8 +955,7 @@ namespace Dapper
                 return columnName;
 
             columnName = _columnNameResolver.ResolveColumnName(propertyInfo);
-
-            ColumnNames.AddOrUpdate(key, columnName, (t, v) => columnName);
+            ColumnNames[key] = columnName;
 
             return columnName;
         }
